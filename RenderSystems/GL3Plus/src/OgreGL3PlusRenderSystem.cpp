@@ -61,6 +61,8 @@ Copyright (c) 2000-2014 Torus Knot Software Ltd
 #include "OgreGL3PlusStateCacheManager.h"
 #include "OgreGLSLProgramCommon.h"
 #include "OgreGL3PlusFBOMultiRenderTarget.h"
+#include "OgreSPIRVShaderFactory.h"
+
 
 #if OGRE_PLATFORM == OGRE_PLATFORM_APPLE
 extern "C" void glFlushRenderAPPLE();
@@ -135,6 +137,7 @@ namespace Ogre {
           mStateCacheManager(0),
           mShaderManager(0),
           mGLSLShaderFactory(0),
+          mSPIRVShaderFactory(0),
           mHardwareBufferManager(0),
           mActiveTextureUnit(0)
     {
@@ -162,12 +165,7 @@ namespace Ogre {
         mGLInitialised = false;
         mMinFilter = FO_LINEAR;
         mMipFilter = FO_POINT;
-        mCurrentVertexShader = 0;
-        mCurrentGeometryShader = 0;
-        mCurrentFragmentShader = 0;
-        mCurrentHullShader = 0;
-        mCurrentDomainShader = 0;
-        mCurrentComputeShader = 0;
+        mCurrentShader.fill(NULL);
         mLargestSupportedAnisotropy = 1;
         mRTTManager = NULL;
     }
@@ -190,6 +188,19 @@ namespace Ogre {
     {
         RenderSystem::_initialise();
         mGLSupport->start();
+    }
+
+    void GL3PlusRenderSystem::initConfigOptions()
+    {
+        GLRenderSystemCommon::initConfigOptions();
+
+        ConfigOption opt;
+        opt.name = "Reversed Z-Buffer";
+        opt.possibleValues = {"No", "Yes"};
+        opt.currentValue = opt.possibleValues[0];
+        opt.immutable = false;
+
+        mOptions[opt.name] = opt;
     }
 
     RenderSystemCapabilities* GL3PlusRenderSystem::createRenderSystemCapabilities() const
@@ -350,6 +361,8 @@ namespace Ogre {
         if (getNativeShadingLanguageVersion() >= 130 && !limitedOSXCoreProfile)
             rsc->addShaderProfile("glsl130");
 
+        if(checkExtension("GL_ARB_gl_spirv")) rsc->addShaderProfile("spirv");
+
         if (hasMinGLVersion(4, 1) || checkExtension("GL_ARB_separate_shader_objects")) {
             // this relaxes shader matching rules and requires slightly different GLSL declaration
             // however our usage pattern does not benefit from this and driver support is quite poor
@@ -494,6 +507,8 @@ namespace Ogre {
         // Create GLSL shader factory
         mGLSLShaderFactory = new GLSLShaderFactory(this);
         HighLevelGpuProgramManager::getSingleton().addFactory(mGLSLShaderFactory);
+        mSPIRVShaderFactory = new SPIRVShaderFactory();
+        HighLevelGpuProgramManager::getSingleton().addFactory(mSPIRVShaderFactory);
 
         // Use VBO's by default
         mHardwareBufferManager = new GL3PlusHardwareBufferManager();
@@ -520,15 +535,21 @@ namespace Ogre {
     {
         RenderSystem::shutdown();
 
-        // Deleting the GLSL program factory
-        if (mGLSLShaderFactory)
+        // Remove from manager safely
+        if (auto progMgr = HighLevelGpuProgramManager::getSingletonPtr())
         {
-            // Remove from manager safely
-            if (HighLevelGpuProgramManager::getSingletonPtr())
-                HighLevelGpuProgramManager::getSingleton().removeFactory(mGLSLShaderFactory);
-            OGRE_DELETE mGLSLShaderFactory;
-            mGLSLShaderFactory = 0;
+            if(mGLSLShaderFactory)
+                progMgr->removeFactory(mGLSLShaderFactory);
+
+            if(mSPIRVShaderFactory)
+                progMgr->removeFactory(mSPIRVShaderFactory);
         }
+
+        OGRE_DELETE mGLSLShaderFactory;
+        mGLSLShaderFactory = 0;
+
+        OGRE_DELETE mSPIRVShaderFactory;
+        mSPIRVShaderFactory = 0;
 
         // Deleting the GPU program manager and hardware buffer manager.  Has to be done before the mGLSupport->stop().
         if(mShaderManager)
@@ -643,6 +664,15 @@ namespace Ogre {
             StringVector tokens = StringUtil::split(shadingLangVersion, ". ");
             mNativeShadingLanguageVersion = (StringConverter::parseUnsignedInt(tokens[0]) * 100) + StringConverter::parseUnsignedInt(tokens[1]);
 
+            auto it = mOptions.find("Reversed Z-Buffer");
+            if (it != mOptions.end())
+            {
+                mIsReverseDepthBufferEnabled = StringConverter::parseBool(it->second.currentValue);
+                OgreAssert(!mIsReverseDepthBufferEnabled || hasMinGLVersion(4, 5) ||
+                               checkExtension("GL_ARB_clip_control"),
+                           "Reversed Z-Buffer not supported");
+            }
+
             // Initialise GL after the first window has been created
             // TODO: fire this from emulation options, and don't duplicate Real and Current capabilities
             mRealCapabilities = createRenderSystemCapabilities();
@@ -689,8 +719,7 @@ namespace Ogre {
             // Presence of an FBO means the manager is an FBO Manager, that's why it's safe to downcast.
             // Find best depth & stencil format suited for the RT's format.
             GLuint depthFormat, stencilFormat;
-            static_cast<GL3PlusFBOManager*>(mRTTManager)->getBestDepthStencil( fbo->getFormat(),
-                                                                               &depthFormat, &stencilFormat );
+            _getDepthStencilFormatFor(fbo->getFormat(), &depthFormat, &stencilFormat);
 
             GL3PlusRenderBuffer *depthBuffer = new GL3PlusRenderBuffer( depthFormat, fbo->getWidth(),
                                                                         fbo->getHeight(), fbo->getFSAA() );
@@ -1048,7 +1077,7 @@ namespace Ogre {
     {
         if (enabled)
         {
-            mStateCacheManager->setClearDepth(1.0f);
+            mStateCacheManager->setClearDepth(isReverseDepthBufferEnabled() ? 0.0f : 1.0f);
         }
         mStateCacheManager->setEnabled(GL_DEPTH_TEST, enabled);
     }
@@ -1064,12 +1093,11 @@ namespace Ogre {
 
     void GL3PlusRenderSystem::_setDepthBufferFunction(CompareFunction func)
     {
-        mStateCacheManager->setDepthFunc(convertCompareFunction(func));
+        mStateCacheManager->setDepthFunc(convertCompareFunction(func, isReverseDepthBufferEnabled()));
     }
 
     void GL3PlusRenderSystem::_setDepthBias(float constantBias, float slopeScaleBias)
     {
-        //FIXME glPolygonOffset currently is buggy in GL3+ RS but not GL RS.
         bool enable = constantBias != 0 || slopeScaleBias != 0;
         mStateCacheManager->setEnabled(GL_POLYGON_OFFSET_FILL, enable);
         mStateCacheManager->setEnabled(GL_POLYGON_OFFSET_POINT, enable);
@@ -1077,6 +1105,12 @@ namespace Ogre {
 
         if (enable)
         {
+            if(isReverseDepthBufferEnabled())
+            {
+                slopeScaleBias *= -1;
+                constantBias *= -1;
+            }
+
             glPolygonOffset(-slopeScaleBias, -constantBias);
         }
     }
@@ -1283,7 +1317,8 @@ namespace Ogre {
 
         int operationType = op.operationType;
         // Use adjacency if there is a geometry program and it requested adjacency info
-        if(mGeometryProgramBound && mCurrentGeometryShader && mCurrentGeometryShader->isAdjacencyInfoRequired())
+        auto currentGeometryShader = mCurrentShader[GPT_GEOMETRY_PROGRAM];
+        if(mGeometryProgramBound && currentGeometryShader && currentGeometryShader->isAdjacencyInfoRequired())
             operationType |= RenderOperation::OT_DETAIL_ADJACENCY_BIT;
 
         // Determine the correct primitive type to render.
@@ -1340,7 +1375,7 @@ namespace Ogre {
 
 
         // Render to screen!
-        if (mCurrentDomainShader)
+        if (mCurrentShader[GPT_DOMAIN_PROGRAM])
         {
             // Tessellation shader special case.
             // Note: Only evaluation (domain) shaders are required.
@@ -1380,7 +1415,7 @@ namespace Ogre {
             {
                 void *pBufferData = GL_BUFFER_OFFSET(op.indexData->indexStart *
                                                      op.indexData->indexBuffer->getIndexSize());
-                GLenum indexType = (op.indexData->indexBuffer->getType() == HardwareIndexBuffer::IT_32BIT) ? GL_UNSIGNED_BYTE : GL_UNSIGNED_SHORT;
+                GLenum indexType = (op.indexData->indexBuffer->getType() == HardwareIndexBuffer::IT_16BIT) ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT;
                 OGRE_CHECK_GL_ERROR(glDrawElements(GL_PATCHES, op.indexData->indexCount, indexType, pBufferData));
                 //OGRE_CHECK_GL_ERROR(glDrawElements(GL_PATCHES, op.indexData->indexCount, indexType, pBufferData));
                 //                OGRE_CHECK_GL_ERROR(glDrawArraysInstanced(GL_PATCHES, 0, primCount, 1));
@@ -1397,7 +1432,6 @@ namespace Ogre {
             void *pBufferData = GL_BUFFER_OFFSET(op.indexData->indexStart *
                                                  op.indexData->indexBuffer->getIndexSize());
 
-            //TODO : GL_UNSIGNED_INT or GL_UNSIGNED_BYTE?  Latter breaks samples.
             GLenum indexType = (op.indexData->indexBuffer->getType() == HardwareIndexBuffer::IT_16BIT) ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT;
 
             do
@@ -1446,6 +1480,22 @@ namespace Ogre {
         // Do not unbind the vertex array object
         // VAOs > 0 are selected each time before usage
         // VAO #0 is not supported in Core profiles, and WOULD NOT be used by Ogre even in compatibility profiles
+    }
+
+    void GL3PlusRenderSystem::_getDepthStencilFormatFor(PixelFormat internalColourFormat,
+                                                        uint32* depthFormat,
+                                                        uint32* stencilFormat)
+    {
+        if (isReverseDepthBufferEnabled())
+        {
+            *depthFormat = GL_DEPTH_COMPONENT32F;
+            *stencilFormat = GL_NONE;
+        }
+        else
+        {
+            static_cast<GL3PlusFBOManager*>(mRTTManager)->getBestDepthStencil(
+                    internalColourFormat, depthFormat, stencilFormat);
+        }
     }
 
     void GL3PlusRenderSystem::setScissorTest(bool enabled, size_t left,
@@ -1530,6 +1580,12 @@ namespace Ogre {
             {
                 mStateCacheManager->setDepthMask( GL_TRUE );
             }
+
+            if (isReverseDepthBufferEnabled())
+            {
+                depth = 1.0f - 0.5f * (depth + 1.0f);
+            }
+
             mStateCacheManager->setClearDepth(depth);
         }
         if (buffers & FBT_STENCIL)
@@ -1595,18 +1651,11 @@ namespace Ogre {
         // Unbind GPU programs and rebind to new context later, because
         // scene manager treat render system as ONE 'context' ONLY, and it
         // cached the GPU programs using state.
-        if (mCurrentVertexShader)
-            mCurrentVertexShader->unbind();
-        if (mCurrentGeometryShader)
-            mCurrentGeometryShader->unbind();
-        if (mCurrentFragmentShader)
-            mCurrentFragmentShader->unbind();
-        if (mCurrentHullShader)
-            mCurrentHullShader->unbind();
-        if (mCurrentDomainShader)
-            mCurrentDomainShader->unbind();
-        if (mCurrentComputeShader)
-            mCurrentComputeShader->unbind();
+        for(auto shader : mCurrentShader)
+        {
+            if(!shader) continue;
+            GLSLProgramManager::getSingleton().setActiveShader(shader->getType(), NULL);
+        }
 
         // Disable textures
         _disableTextureUnitsFrom(0);
@@ -1634,18 +1683,11 @@ namespace Ogre {
         }
 
         // Rebind GPU programs to new context
-        if (mCurrentVertexShader)
-            mCurrentVertexShader->bind();
-        if (mCurrentGeometryShader)
-            mCurrentGeometryShader->bind();
-        if (mCurrentFragmentShader)
-            mCurrentFragmentShader->bind();
-        if (mCurrentHullShader)
-            mCurrentHullShader->bind();
-        if (mCurrentDomainShader)
-            mCurrentDomainShader->bind();
-        if (mCurrentComputeShader)
-            mCurrentComputeShader->bind();
+        for(auto shader : mCurrentShader)
+        {
+            if(!shader) continue;
+            GLSLProgramManager::getSingleton().setActiveShader(shader->getType(), shader);
+        }
 
         // Must reset depth/colour write mask to according with user desired, otherwise,
         // clearFrameBuffer would be wrong because the value we are recorded may be
@@ -1765,6 +1807,12 @@ namespace Ogre {
             glEnable(0x8861); // GL_POINT_SPRITE
             glGetError();     // clear the error that it generates nevertheless..
         }
+
+        if (isReverseDepthBufferEnabled())
+        {
+            // We want depth to range from 0 to 1 to increase precision.
+            glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);
+        }
     }
 
     void GL3PlusRenderSystem::initialiseContext(RenderWindow* primary)
@@ -1841,7 +1889,7 @@ namespace Ogre {
         }
     }
 
-    GLint GL3PlusRenderSystem::convertCompareFunction(CompareFunction func)
+    GLint GL3PlusRenderSystem::convertCompareFunction(CompareFunction func, bool isReverse)
     {
         switch(func)
         {
@@ -1850,18 +1898,18 @@ namespace Ogre {
         case CMPF_ALWAYS_PASS:
             return GL_ALWAYS;
         case CMPF_LESS:
-            return GL_LESS;
+            return isReverse ? GL_GREATER : GL_LESS;
         case CMPF_LESS_EQUAL:
-            return GL_LEQUAL;
+            return isReverse ? GL_GEQUAL : GL_LEQUAL;
         case CMPF_EQUAL:
             return GL_EQUAL;
         case CMPF_NOT_EQUAL:
             return GL_NOTEQUAL;
         case CMPF_GREATER_EQUAL:
-            return GL_GEQUAL;
+            return isReverse ? GL_LEQUAL : GL_GEQUAL;
         case CMPF_GREATER:
-            return GL_GREATER;
-        };
+            return isReverse ? GL_LESS :  GL_GREATER;
+        }
         // To keep compiler happy
         return GL_ALWAYS;
     }
@@ -1896,79 +1944,9 @@ namespace Ogre {
     {
         GLSLShader* glprg = static_cast<GLSLShader*>(prg);
 
-        // Unbind previous shader first.
-        //
-        // Note:
-        //  1. Even if both previous and current are the same object, we can't
-        //     bypass re-bind completely since the object itself may be modified.
-        //     But we can bypass unbind based on the assumption that the object's
-        //     internal GL program type shouldn't change after object creation.
-        //     The behavior of binding to a GL program type twice
-        //     should be the same as unbinding and rebinding that GL program type,
-        //     even for different objects.
-        //  2. We also assumed that the program's type (vertex or fragment) should
-        //     not change during its use. If not, the following switch
-        //     statement will confuse GL state completely, and we can't fix it
-        //     here. To fix this case we must code the program implementation
-        //     itself: if type is changing (during load/unload, etc), and it's in
-        //     use, unbind and notify render system to correct for its state.
-        //
-        switch (glprg->getType())
-        {
-        case GPT_VERTEX_PROGRAM:
-            if (mCurrentVertexShader != glprg)
-            {
-                if (mCurrentVertexShader)
-                    mCurrentVertexShader->unbind();
-                mCurrentVertexShader = glprg;
-            }
-            break;
-        case GPT_HULL_PROGRAM:
-            if (mCurrentHullShader != glprg)
-            {
-                if (mCurrentHullShader)
-                    mCurrentHullShader->unbind();
-                mCurrentHullShader = glprg;
-            }
-            break;
-        case GPT_DOMAIN_PROGRAM:
-            if (mCurrentDomainShader != glprg)
-            {
-                if (mCurrentDomainShader)
-                    mCurrentDomainShader->unbind();
-                mCurrentDomainShader = glprg;
-            }
-            break;
-        case GPT_GEOMETRY_PROGRAM:
-            if (mCurrentGeometryShader != glprg)
-            {
-                if (mCurrentGeometryShader)
-                    mCurrentGeometryShader->unbind();
-                mCurrentGeometryShader = glprg;
-            }
-            break;
-        case GPT_FRAGMENT_PROGRAM:
-            if (mCurrentFragmentShader != glprg)
-            {
-                if (mCurrentFragmentShader)
-                    mCurrentFragmentShader->unbind();
-                mCurrentFragmentShader = glprg;
-            }
-            break;
-        case GPT_COMPUTE_PROGRAM:
-            if (mCurrentComputeShader != glprg)
-            {
-                if (mCurrentComputeShader )
-                    mCurrentComputeShader ->unbind();
-                mCurrentComputeShader  = glprg;
-            }
-            break;
-        default:
-            break;
-        }
-
+        mCurrentShader[glprg->getType()] = glprg;
         // Bind the program
-        glprg->bind();
+        GLSLProgramManager::getSingleton().setActiveShader(glprg->getType(), glprg);
 
         RenderSystem::bindGpuProgram(prg);
 
@@ -1991,47 +1969,81 @@ namespace Ogre {
 
     void GL3PlusRenderSystem::unbindGpuProgram(GpuProgramType gptype)
     {
-        if (gptype == GPT_VERTEX_PROGRAM && mCurrentVertexShader)
+        GLSLProgramManager::getSingleton().setActiveShader(gptype, NULL);
+
+        if (gptype == GPT_VERTEX_PROGRAM && mCurrentShader[gptype])
         {
             mActiveVertexGpuProgramParameters.reset();
-            mCurrentVertexShader->unbind();
-            mCurrentVertexShader = 0;
         }
-        else if (gptype == GPT_GEOMETRY_PROGRAM && mCurrentGeometryShader)
+        else if (gptype == GPT_GEOMETRY_PROGRAM && mCurrentShader[gptype])
         {
             mActiveGeometryGpuProgramParameters.reset();
-            mCurrentGeometryShader->unbind();
-            mCurrentGeometryShader = 0;
         }
-        else if (gptype == GPT_FRAGMENT_PROGRAM && mCurrentFragmentShader)
+        else if (gptype == GPT_FRAGMENT_PROGRAM && mCurrentShader[gptype])
         {
             mActiveFragmentGpuProgramParameters.reset();
-            mCurrentFragmentShader->unbind();
-            mCurrentFragmentShader = 0;
         }
-        else if (gptype == GPT_HULL_PROGRAM && mCurrentHullShader)
+        else if (gptype == GPT_HULL_PROGRAM && mCurrentShader[gptype])
         {
             mActiveTessellationHullGpuProgramParameters.reset();
-            mCurrentHullShader->unbind();
-            mCurrentHullShader = 0;
         }
-        else if (gptype == GPT_DOMAIN_PROGRAM && mCurrentDomainShader)
+        else if (gptype == GPT_DOMAIN_PROGRAM && mCurrentShader[gptype])
         {
             mActiveTessellationDomainGpuProgramParameters.reset();
-            mCurrentDomainShader->unbind();
-            mCurrentDomainShader = 0;
         }
-        else if (gptype == GPT_COMPUTE_PROGRAM && mCurrentComputeShader)
+        else if (gptype == GPT_COMPUTE_PROGRAM && mCurrentShader[gptype])
         {
             mActiveComputeGpuProgramParameters.reset();
-            mCurrentComputeShader->unbind();
-            mCurrentComputeShader = 0;
         }
+
+        mCurrentShader[gptype] = NULL;
+
         RenderSystem::unbindGpuProgram(gptype);
     }
 
     void GL3PlusRenderSystem::bindGpuProgramParameters(GpuProgramType gptype, const GpuProgramParametersPtr& params, uint16 mask)
     {
+        switch (gptype)
+        {
+        case GPT_VERTEX_PROGRAM:
+            mActiveVertexGpuProgramParameters = params;
+            break;
+        case GPT_FRAGMENT_PROGRAM:
+            mActiveFragmentGpuProgramParameters = params;
+            break;
+        case GPT_GEOMETRY_PROGRAM:
+            mActiveGeometryGpuProgramParameters = params;
+            break;
+        case GPT_HULL_PROGRAM:
+            mActiveTessellationHullGpuProgramParameters = params;
+            break;
+        case GPT_DOMAIN_PROGRAM:
+            mActiveTessellationDomainGpuProgramParameters = params;
+            break;
+        case GPT_COMPUTE_PROGRAM:
+            mActiveComputeGpuProgramParameters = params;
+            break;
+        default:
+            break;
+        }
+
+        GLSLProgram* program = NULL;
+
+        // Link can throw exceptions, ignore them at this point.
+        try
+        {
+            program = GLSLProgramManager::getSingleton().getActiveProgram();
+        }
+        catch (InvalidParametersException& e)
+        {
+            LogManager::getSingleton().logError("binding shared parameters failed: " + e.getDescription());
+            return;
+        }
+        catch (Exception&)
+        {
+            return;
+        }
+
         if (mask & (uint16)GPV_GLOBAL)
         {
             // TODO We could maybe use GL_EXT_bindable_uniform here to produce Dx10-style
@@ -2040,97 +2052,17 @@ namespace Ogre {
             // for now, just copy
             params->_copySharedParams();
 
-            switch (gptype)
-            {
-            case GPT_VERTEX_PROGRAM:
-                mActiveVertexGpuProgramParameters = params;
-                mCurrentVertexShader->bindSharedParameters(params, mask);
-                break;
-            case GPT_FRAGMENT_PROGRAM:
-                mActiveFragmentGpuProgramParameters = params;
-                mCurrentFragmentShader->bindSharedParameters(params, mask);
-                break;
-            case GPT_GEOMETRY_PROGRAM:
-                mActiveGeometryGpuProgramParameters = params;
-                mCurrentGeometryShader->bindSharedParameters(params, mask);
-                break;
-            case GPT_HULL_PROGRAM:
-                mActiveTessellationHullGpuProgramParameters = params;
-                mCurrentHullShader->bindSharedParameters(params, mask);
-                break;
-            case GPT_DOMAIN_PROGRAM:
-                mActiveTessellationDomainGpuProgramParameters = params;
-                mCurrentDomainShader->bindSharedParameters(params, mask);
-                break;
-            case GPT_COMPUTE_PROGRAM:
-                mActiveComputeGpuProgramParameters = params;
-                mCurrentComputeShader->bindSharedParameters(params, mask);
-                break;
-            default:
-                break;
-            }
+            program->updateUniformBlocks();
+            // program->updateShaderStorageBlock(params, mask, mType);
         }
 
-        switch (gptype)
-        {
-        case GPT_VERTEX_PROGRAM:
-            mActiveVertexGpuProgramParameters = params;
-            mCurrentVertexShader->bindParameters(params, mask);
-            break;
-        case GPT_FRAGMENT_PROGRAM:
-            mActiveFragmentGpuProgramParameters = params;
-            mCurrentFragmentShader->bindParameters(params, mask);
-            break;
-        case GPT_GEOMETRY_PROGRAM:
-            mActiveGeometryGpuProgramParameters = params;
-            mCurrentGeometryShader->bindParameters(params, mask);
-            break;
-        case GPT_HULL_PROGRAM:
-            mActiveTessellationHullGpuProgramParameters = params;
-            mCurrentHullShader->bindParameters(params, mask);
-            break;
-        case GPT_DOMAIN_PROGRAM:
-            mActiveTessellationDomainGpuProgramParameters = params;
-            mCurrentDomainShader->bindParameters(params, mask);
-            break;
-        case GPT_COMPUTE_PROGRAM:
-            mActiveComputeGpuProgramParameters = params;
-            mCurrentComputeShader->bindParameters(params, mask);
-            break;
-        default:
-            break;
-        }
+        // Pass on parameters from params to program object uniforms.
+        program->updateUniforms(params, mask, gptype);
+        program->updateAtomicCounters(params, mask, gptype);
 
         // FIXME This needs to be moved somewhere texture specific.
         // Update image bindings for image load/store
         // static_cast<GL3PlusTextureManager*>(mTextureManager)->bindImages();
-    }
-
-    void GL3PlusRenderSystem::bindGpuProgramPassIterationParameters(GpuProgramType gptype)
-    {
-        switch (gptype)
-        {
-        case GPT_VERTEX_PROGRAM:
-            mCurrentVertexShader->bindPassIterationParameters(mActiveVertexGpuProgramParameters);
-            break;
-        case GPT_FRAGMENT_PROGRAM:
-            mCurrentFragmentShader->bindPassIterationParameters(mActiveFragmentGpuProgramParameters);
-            break;
-        case GPT_GEOMETRY_PROGRAM:
-            mCurrentGeometryShader->bindPassIterationParameters(mActiveGeometryGpuProgramParameters);
-            break;
-        case GPT_HULL_PROGRAM:
-            mCurrentHullShader->bindPassIterationParameters(mActiveTessellationHullGpuProgramParameters);
-            break;
-        case GPT_DOMAIN_PROGRAM:
-            mCurrentDomainShader->bindPassIterationParameters(mActiveTessellationDomainGpuProgramParameters);
-            break;
-        case GPT_COMPUTE_PROGRAM:
-            mCurrentComputeShader->bindPassIterationParameters(mActiveComputeGpuProgramParameters);
-            break;
-        default:
-            break;
-        }
     }
 
     void GL3PlusRenderSystem::registerThread()

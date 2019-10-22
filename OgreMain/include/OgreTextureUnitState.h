@@ -340,6 +340,7 @@ namespace Ogre {
         ~TextureUnitState();
 
         /** Name-based constructor.
+        @param parent the parent Pass object.
         @param texName
             The basic name of the texture e.g. brickwall.jpg, stonefloor.png.
         @param texCoordSet
@@ -358,7 +359,10 @@ namespace Ogre {
         /** Sets this texture layer to use a single texture, given the
             name of the texture to use on this layer.
         */
-        void setTextureName( const String& name, TextureType ttype = TEX_TYPE_2D);
+        void setTextureName( const String& name);
+
+        /// @overload
+        void setTextureName( const String& name, TextureType ttype);
 
         /** Sets this texture layer to use a single texture, given the
             pointer to the texture to use on this layer.
@@ -691,7 +695,7 @@ namespace Ogre {
         {
             _getLocalSampler()->setFiltering(filterType);
         }
-        /// @copydoc Sampler::setFiltering
+        /// @copydoc Sampler::setFiltering(FilterType, FilterOptions)
         void setTextureFiltering(FilterType ftype, FilterOptions opts)
         {
             _getLocalSampler()->setFiltering(ftype, opts);

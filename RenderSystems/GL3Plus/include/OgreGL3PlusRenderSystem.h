@@ -36,6 +36,8 @@ Copyright (c) 2000-2014 Torus Knot Software Ltd
 #include "OgreGLRenderSystemCommon.h"
 #include "OgreGL3PlusStateCacheManager.h"
 
+#include <array>
+
 namespace Ogre {
     /** \addtogroup RenderSystems RenderSystems
     *  @{
@@ -93,6 +95,7 @@ namespace Ogre {
 
         GpuProgramManager *mShaderManager;
         GLSLShaderFactory* mGLSLShaderFactory;
+        HighLevelGpuProgramFactory* mSPIRVShaderFactory;
         HardwareBufferManager* mHardwareBufferManager;
 
         /** These variables are used for caching RenderSystem state.
@@ -110,12 +113,7 @@ namespace Ogre {
 		virtual bool setDrawBuffer(ColourBufferType colourBuffer);
 #endif
 
-        GLSLShader* mCurrentVertexShader;
-        GLSLShader* mCurrentFragmentShader;
-        GLSLShader* mCurrentGeometryShader;
-        GLSLShader* mCurrentHullShader;
-        GLSLShader* mCurrentDomainShader;
-        GLSLShader* mCurrentComputeShader;
+        std::array<GLSLShader*, GPT_COUNT> mCurrentShader;
 
         GLenum getBlendMode(SceneBlendFactor ogreBlend) const;
 
@@ -140,6 +138,8 @@ namespace Ogre {
         const String& getName(void) const;
 
         void _initialise() override;
+
+        void initConfigOptions();
 
         virtual RenderSystemCapabilities* createRenderSystemCapabilities() const;
 
@@ -215,6 +215,10 @@ namespace Ogre {
 
         void _render(const RenderOperation& op);
 
+        void _getDepthStencilFormatFor(PixelFormat internalColourFormat,
+                                       uint32* depthFormat,
+                                       uint32* stencilFormat);
+
         void setScissorTest(bool enabled, size_t left = 0, size_t top = 0, size_t right = 800, size_t bottom = 600);
 
         void clearFrameBuffer(unsigned int buffers,
@@ -262,13 +266,12 @@ namespace Ogre {
          */
         void _setRenderTarget(RenderTarget *target);
 
-        static GLint convertCompareFunction(CompareFunction func);
+        static GLint convertCompareFunction(CompareFunction func, bool isReverse = false);
         static GLint convertStencilOp(StencilOperation op, bool invert = false);
 
         void bindGpuProgram(GpuProgram* prg);
         void unbindGpuProgram(GpuProgramType gptype);
         void bindGpuProgramParameters(GpuProgramType gptype, const GpuProgramParametersPtr& params, uint16 mask);
-        void bindGpuProgramPassIterationParameters(GpuProgramType gptype);
 
         /// @copydoc RenderSystem::_setSeparateSceneBlending
         void _setSeparateSceneBlending( SceneBlendFactor sourceFactor, SceneBlendFactor destFactor, SceneBlendFactor sourceFactorAlpha, SceneBlendFactor destFactorAlpha, SceneBlendOperation op, SceneBlendOperation alphaOp );

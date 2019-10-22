@@ -272,10 +272,7 @@ namespace Ogre
     void GpuNamedConstantsSerializer::exportNamedConstants(
         const GpuNamedConstants* pConsts, const String& filename, Endian endianMode)
     {
-        std::fstream *f = OGRE_NEW_T(std::fstream, MEMCATEGORY_GENERAL)();
-        f->open(filename.c_str(), std::ios::binary | std::ios::out);
-        DataStreamPtr stream(OGRE_NEW FileStreamDataStream(f));
-
+        DataStreamPtr stream = _openFileStream(filename, std::ios::binary | std::ios::out);
         exportNamedConstants(pConsts, stream, endianMode);
 
         stream->close();
@@ -2367,7 +2364,7 @@ namespace Ogre
                     break;
                 case ACT_LIGHT_CASTS_SHADOWS_ARRAY:
                     for (size_t l = 0; l < i->data; ++l)
-                        _writeRawConstant(i->physicalIndex + l*i->elementCount, source->getLightCastsShadows(l), i->elementCount);
+                        _writeRawConstant(i->physicalIndex + l, source->getLightCastsShadows(l));
                     break;
                 case ACT_LIGHT_ATTENUATION:
                     _writeRawConstant(i->physicalIndex, source->getLightAttenuation(i->data), i->elementCount);

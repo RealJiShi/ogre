@@ -175,6 +175,22 @@ namespace OgreBites
             }
         }
 
+        /// catch any exceptions that might drop out of event handlers implemented by Samples
+        bool frameStarted(const Ogre::FrameEvent& evt)
+        {
+            try
+            {
+                return SampleContext::frameStarted(evt);
+            }
+            catch (Ogre::Exception& e)   // show error and fall back to menu
+            {
+                runSample(0);
+                mTrayMgr->showOkDialog("Error!", e.getDescription() + "\nSource: " + e.getSource());
+            }
+
+            return true;
+        }
+
         /*-----------------------------------------------------------------------------
           | Extends frameRenderingQueued to update tray manager and carousel.
           -----------------------------------------------------------------------------*/
@@ -220,17 +236,7 @@ namespace OgreBites
 
             mTrayMgr->frameRendered(evt);
 
-            try
-            {
-                return SampleContext::frameRenderingQueued(evt);
-            }
-            catch (Ogre::Exception& e)   // show error and fall back to menu
-            {
-                runSample(0);
-                mTrayMgr->showOkDialog("Error!", e.getDescription() + "\nSource: " + e.getSource());
-            }
-
-            return true;
+            return SampleContext::frameRenderingQueued(evt);
         }
 
         /*-----------------------------------------------------------------------------
@@ -598,17 +604,7 @@ namespace OgreBites
                     mWindow->setFSAA(newFSAA, mWindow->getFSAAHint());
             }
 
-            try
-            {
-                return SampleContext::keyPressed(evt);
-            }
-            catch (Ogre::Exception& e)   // show error and fall back to menu
-            {
-                runSample(0);
-                mTrayMgr->showOkDialog("Error!", e.getDescription() + "\nSource: " + e.getSource());
-            }
-
-            return true;
+            return SampleContext::keyPressed(evt);
         }
 
 #if OGRE_PLATFORM == OGRE_PLATFORM_APPLE_IOS
@@ -652,11 +648,6 @@ namespace OgreBites
           -----------------------------------------------------------------------------*/
         virtual bool mousePressed(const MouseButtonEvent& evt)
         {
-            // FIXME: does SDL handle orientation for us already?
-            //OIS::PointerState state = evt.state;
-            //transformInputState(state);
-            //OIS::PointerEvent orientedEvt((OIS::Object*)evt.device, state);
-
             if (mTitleLabel->getTrayLocation() != TL_NONE)
             {
                 for (unsigned int i = 0; i < mThumbs.size(); i++)
@@ -670,20 +661,9 @@ namespace OgreBites
                 }
             }
 
-            if ((!mCurrentSample || mSamplePaused) && mTrayMgr->mousePressed(evt)) return true;
+            if (isCurrentSamplePaused()) return mTrayMgr->mousePressed(evt);
 
-            try
-            {
-                // return SampleContext::mousePressed(orientedEvt);
-                return SampleContext::mousePressed(evt);
-            }
-            catch (Ogre::Exception& e)   // show error and fall back to menu
-            {
-                runSample(0);
-                mTrayMgr->showOkDialog("Error!", e.getDescription() + "\nSource: " + e.getSource());
-            }
-
-            return true;
+            return SampleContext::mousePressed(evt);
         }
 
         // convert and redirect
@@ -698,23 +678,9 @@ namespace OgreBites
           -----------------------------------------------------------------------------*/
         virtual bool mouseReleased(const MouseButtonEvent& evt)
          {
-            //OIS::PointerState state = evt.state;
-            //transformInputState(state);
-            //OIS::PointerEvent orientedEvt((OIS::Object*)evt.device, state);
+            if (isCurrentSamplePaused()) return mTrayMgr->mouseReleased(evt);
 
-            if ((!mCurrentSample || mSamplePaused) && mTrayMgr->mouseReleased(evt)) return true;
-
-            try
-            {
-                return SampleContext::mouseReleased(evt);
-            }
-            catch (Ogre::Exception& e)   // show error and fall back to menu
-            {
-                runSample(0);
-                mTrayMgr->showOkDialog("Error!", e.getDescription() + "\nSource: " + e.getSource());
-            }
-
-            return true;
+            return SampleContext::mouseReleased(evt);
         }
 
         // convert and redirect
@@ -730,23 +696,9 @@ namespace OgreBites
           -----------------------------------------------------------------------------*/
         virtual bool mouseMoved(const MouseMotionEvent& evt)
         {
-            //OIS::PointerState state = evt.state;
-            //transformInputState(state);
-            //OIS::PointerEvent orientedEvt((OIS::Object*)evt.device, state);
+            if (isCurrentSamplePaused()) return mTrayMgr->mouseMoved(evt);
 
-            if ((!mCurrentSample || mSamplePaused) && mTrayMgr->mouseMoved(evt)) return true;
-
-            try
-            {
-                return SampleContext::mouseMoved(evt);
-            }
-            catch (Ogre::Exception& e)   // show error and fall back to menu
-            {
-                runSample(0);
-                mTrayMgr->showOkDialog("Error!", e.getDescription() + "\nSource: " + e.getSource());
-            }
-
-            return true;
+            return SampleContext::mouseMoved(evt);
         }
 
         // convert and redirect
@@ -764,8 +716,8 @@ namespace OgreBites
          */
         virtual bool mouseWheelRolled(const MouseWheelEvent& evt)
         {
-            if (!(mCurrentSample && !mSamplePaused) && mTitleLabel->getTrayLocation() != TL_NONE
-                && mSampleMenu->getNumItems() != 0)
+            if (isCurrentSamplePaused() && mTitleLabel->getTrayLocation() != TL_NONE &&
+                mSampleMenu->getNumItems() != 0)
             {
                 int newIndex = mSampleMenu->getSelectionIndex() - evt.y / Ogre::Math::Abs(evt.y);
                 mSampleMenu->selectItem(Ogre::Math::Clamp<size_t>(newIndex, 0, mSampleMenu->getNumItems() - 1));
@@ -852,6 +804,15 @@ namespace OgreBites
           -----------------------------------------------------------------------------*/
         virtual NativeWindowPair createWindow(const Ogre::String& name, uint32_t w, uint32_t h, Ogre::NameValuePairList miscParams)
         {
+#if OGRE_PLATFORM == OGRE_PLATFORM_ANDROID
+            // Make sure Trays are not tiny -  we cannot easily scale the UI, therefore just reduce resolution
+            float contentScaling = AConfiguration_getDensity(mAConfig)/float(ACONFIGURATION_DENSITY_HIGH);
+            if(contentScaling > 1.0)
+            {
+                miscParams["contentScalingFactor"] = std::to_string(contentScaling);
+                miscParams["FSAA"] = "2";
+            }
+#endif
             NativeWindowPair res = ApplicationContext::createWindow(name, w, h, miscParams);
 
 #if OGRE_PLATFORM == OGRE_PLATFORM_APPLE_IOS

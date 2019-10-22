@@ -434,6 +434,21 @@ namespace Ogre
         */
         void setDepthBufferFor( RenderTarget *renderTarget );
 
+        /**
+         Returns if reverse Z-buffer is enabled.
+
+         If you have large scenes and need big far clip distance but still want
+         to draw objects closer (for example cockpit of a plane) you can enable
+         reverse depth buffer so that the depth buffer precision is greater further away.
+         This enables the OGRE_REVERSED_Z preprocessor define for shaders.
+
+         @retval true If reverse Z-buffer is enabled.
+         @retval false If reverse Z-buffer is disabled (default).
+
+         @see setReverseDepthBuffer
+         */
+        bool isReverseDepthBufferEnabled() const;
+
         // ------------------------------------------------------------------------
         //                     Internal Rendering Access
         // All methods below here are normally only called by other OGRE classes
@@ -861,9 +876,8 @@ namespace Ogre
         virtual void bindGpuProgramParameters(GpuProgramType gptype, 
             const GpuProgramParametersPtr& params, uint16 variabilityMask) = 0;
 
-        /** Only binds Gpu program parameters used for passes that have more than one iteration rendering
-        */
-        virtual void bindGpuProgramPassIterationParameters(GpuProgramType gptype) = 0;
+        /// @deprecated do not use
+        OGRE_DEPRECATED virtual void bindGpuProgramPassIterationParameters(GpuProgramType gptype) {}
         /** Unbinds GpuPrograms of a given GpuProgramType.
         @remarks
         This returns the pipeline to fixed-function processing for this type.
@@ -1176,6 +1190,7 @@ namespace Ogre
         ColourValue mManualBlendColours[OGRE_MAX_TEXTURE_LAYERS][2];
 
         bool mInvertVertexWinding;
+        bool mIsReverseDepthBufferEnabled;
 
         /// Texture units from this upwards are disabled
         size_t mDisabledTexUnitsFrom;

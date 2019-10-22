@@ -4027,6 +4027,12 @@ bool SceneManager::hasMovableObject(const String& name, const String& typeName) 
 }
 
 //---------------------------------------------------------------------
+const SceneManager::MovableObjectMap&
+SceneManager::getMovableObjects(const String& typeName)
+{
+    MovableObjectCollection* objectMap = getMovableObjectCollection(typeName);
+    return objectMap->map;
+}
 SceneManager::MovableObjectIterator 
 SceneManager::getMovableObjectIterator(const String& typeName)
 {
@@ -4277,12 +4283,12 @@ void SceneManager::updateGpuProgramParameters(const Pass* pass)
 //---------------------------------------------------------------------
 void SceneManager::_issueRenderOp(Renderable* rend, const Pass* pass)
 {
+    // Finalise GPU parameter bindings
+    if(pass)
+        updateGpuProgramParameters(pass);
+
     if(rend->preRender(this, mDestRenderSystem))
     {
-        // Finalise GPU parameter bindings
-        if(pass)
-            updateGpuProgramParameters(pass);
-        
         RenderOperation ro;
         ro.srcRenderable = rend;
 

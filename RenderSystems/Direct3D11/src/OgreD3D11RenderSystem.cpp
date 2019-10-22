@@ -954,7 +954,6 @@ namespace Ogre
         rsc->setNumMultiRenderTargets(std::min(numMultiRenderTargets, (int)OGRE_MAX_MULTIPLE_RENDER_TARGETS));
         rsc->setCapability(RSC_MRT_DIFFERENT_BIT_DEPTHS);
 
-        rsc->setCapability(RSC_POINT_SPRITES);
         rsc->setCapability(RSC_POINT_EXTENDED_PARAMETERS);
         rsc->setMaxPointSize(256); // TODO: guess!
     
@@ -3058,33 +3057,6 @@ namespace Ogre
         for(it = subroutineMap.begin(); it != end; ++it)
         {
             setSubroutine(gptype, it->first, it->second);
-        }
-    }
-    //---------------------------------------------------------------------
-    void D3D11RenderSystem::bindGpuProgramPassIterationParameters(GpuProgramType gptype)
-    {
-
-        switch(gptype)
-        {
-        case GPT_VERTEX_PROGRAM:
-            bindGpuProgramParameters(gptype, mActiveVertexGpuProgramParameters, (uint16)GPV_PASS_ITERATION_NUMBER);
-            break;
-
-        case GPT_FRAGMENT_PROGRAM:
-            bindGpuProgramParameters(gptype, mActiveFragmentGpuProgramParameters, (uint16)GPV_PASS_ITERATION_NUMBER);
-            break;
-        case GPT_GEOMETRY_PROGRAM:
-            bindGpuProgramParameters(gptype, mActiveGeometryGpuProgramParameters, (uint16)GPV_PASS_ITERATION_NUMBER);
-            break;
-        case GPT_HULL_PROGRAM:
-            bindGpuProgramParameters(gptype, mActiveTessellationHullGpuProgramParameters, (uint16)GPV_PASS_ITERATION_NUMBER);
-            break;
-        case GPT_DOMAIN_PROGRAM:
-            bindGpuProgramParameters(gptype, mActiveTessellationDomainGpuProgramParameters, (uint16)GPV_PASS_ITERATION_NUMBER);
-            break;
-        case GPT_COMPUTE_PROGRAM:
-            bindGpuProgramParameters(gptype, mActiveComputeGpuProgramParameters, (uint16)GPV_PASS_ITERATION_NUMBER);
-            break;
         }
     }
     //---------------------------------------------------------------------
